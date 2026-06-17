@@ -84,6 +84,171 @@ CARBON_CEILING = {
 }
 
 
+# ── Geography: continent mapping ─────────────────────────────────────────────
+
+COUNTRY_CONTINENT: dict[str, str] = {
+    # Europe
+    "Austria": "Europe", "Belgium": "Europe", "Croatia": "Europe",
+    "Czech Republic": "Europe", "Denmark": "Europe", "Finland": "Europe",
+    "France": "Europe", "Germany": "Europe", "Greece": "Europe",
+    "Hungary": "Europe", "Ireland": "Europe", "Italy": "Europe",
+    "Netherlands": "Europe", "Norway": "Europe", "Poland": "Europe",
+    "Portugal": "Europe", "Romania": "Europe", "Russia": "Europe",
+    "Spain": "Europe", "Sweden": "Europe", "Switzerland": "Europe",
+    "Ukraine": "Europe", "United Kingdom": "Europe",
+    # Note: UK is Europe for rail purposes — Channel Tunnel exists
+    # Asia
+    "Afghanistan": "Asia", "Bangladesh": "Asia", "Cambodia": "Asia",
+    "China": "Asia", "Hong Kong": "Asia", "India": "Asia",
+    "Indonesia": "Asia", "Iran": "Asia", "Iraq": "Asia",
+    "Israel": "Asia", "Japan": "Asia", "Jordan": "Asia",
+    "Malaysia": "Asia", "Myanmar": "Asia", "Pakistan": "Asia",
+    "Philippines": "Asia", "Qatar": "Asia", "Russia": "Asia",
+    "Saudi Arabia": "Asia", "Singapore": "Asia", "South Korea": "Asia",
+    "Sri Lanka": "Asia", "Taiwan": "Asia", "Thailand": "Asia",
+    "Turkey": "Asia", "UAE": "Asia", "Vietnam": "Asia", "Yemen": "Asia",
+    # Africa
+    "Algeria": "Africa", "Egypt": "Africa", "Ethiopia": "Africa",
+    "Ghana": "Africa", "Kenya": "Africa", "Morocco": "Africa",
+    "Nigeria": "Africa", "South Africa": "Africa", "Uganda": "Africa",
+    "Zimbabwe": "Africa",
+    # Americas
+    "Argentina": "South America", "Brazil": "South America", "Chile": "South America",
+    "Colombia": "South America", "Peru": "South America",
+    "Canada": "North America", "Mexico": "North America", "United States": "North America",
+    # Oceania
+    "Australia": "Oceania", "New Zealand": "Oceania",
+}
+
+# Island nations — no land border to any neighbour, rail always needs sea crossing
+ISLAND_NATIONS = {
+    "Japan", "Philippines", "Indonesia", "Sri Lanka",
+    "Australia", "New Zealand", "Taiwan", "Singapore",
+    "Ireland", "Hong Kong",
+}
+
+# Countries with NO outbound intercontinental rail connection of any kind
+# (even if they have domestic rail)
+RAIL_LANDLOCKED_FROM_WORLD = {
+    "India", "Bangladesh", "Pakistan",   # South Asia — no rail to Central Asia in service
+    "Saudi Arabia", "UAE", "Qatar",       # Arabian Peninsula — no rail to outside
+    "Yemen", "Iraq",                      # no operational cross-border rail
+}
+
+# Continent pairs that have NO rail corridor — order doesn't matter (checked both ways)
+NO_RAIL_CONTINENT_PAIRS: set[frozenset] = {
+    frozenset({"Asia",          "North America"}),
+    frozenset({"Asia",          "South America"}),
+    frozenset({"Europe",        "North America"}),
+    frozenset({"Europe",        "South America"}),
+    frozenset({"Africa",        "North America"}),
+    frozenset({"Africa",        "South America"}),
+    frozenset({"Oceania",       "North America"}),
+    frozenset({"Oceania",       "South America"}),
+    frozenset({"Asia",          "Oceania"}),
+    frozenset({"Europe",        "Oceania"}),
+    frozenset({"Africa",        "Oceania"}),
+    frozenset({"Africa",        "Asia"}),
+    frozenset({"Africa",        "Europe"}),
+    # Darién Gap — no rail between North and South America
+    frozenset({"North America", "South America"}),
+}
+
+# Road freight: continent pairs with no viable road corridor
+NO_ROAD_CONTINENT_PAIRS: set[frozenset] = {
+    frozenset({"Asia",          "North America"}),
+    frozenset({"Asia",          "South America"}),
+    frozenset({"Europe",        "North America"}),
+    frozenset({"Europe",        "South America"}),
+    frozenset({"Africa",        "North America"}),
+    frozenset({"Africa",        "South America"}),
+    frozenset({"Oceania",       "North America"}),
+    frozenset({"Oceania",       "South America"}),
+    frozenset({"Asia",          "Oceania"}),
+    frozenset({"Europe",        "Oceania"}),
+    frozenset({"Africa",        "Oceania"}),
+    frozenset({"Africa",        "Europe"}),
+    # Darién Gap — no continuous road between North and South America
+    frozenset({"North America", "South America"}),
+}
+
+
+def _get_continent(country: str) -> str | None:
+    return COUNTRY_CONTINENT.get(country)
+
+
+def _is_same_country(r: dict) -> bool:
+    return (r.get("origin", {}).get("country", "")
+            == r.get("destination", {}).get("country", ""))
+
+
+def _check_rail_corridor(origin_country: str, dest_country: str) -> str | None:
+    """
+    Returns a block reason string if rail is not feasible between these two countries,
+    or None if rail is fine.
+    Domestic routes always return None (no block).
+    """
+    if origin_country == dest_country:
+        return None   # domestic — always allow
+
+    # Island nation check
+    if origin_country in ISLAND_NATIONS:
+        return (f"{origin_country} is an island nation with no rail connection "
+                f"to the outside world — rail freight requires a sea crossing.")
+    if dest_country in ISLAND_NATIONS:
+        return (f"{dest_country} is an island nation with no rail connection "
+                f"to the outside world — rail freight requires a sea crossing.")
+
+    # Countries with no outbound international rail at all
+    if origin_country in RAIL_LANDLOCKED_FROM_WORLD:
+        return (f"No operational international rail connection exists from "
+                f"{origin_country} to any foreign destination.")
+    if dest_country in RAIL_LANDLOCKED_FROM_WORLD:
+        return (f"No operational international rail connection exists into "
+                f"{dest_country}.")
+
+    # Continent-pair check
+    o_cont = _get_continent(origin_country)
+    d_cont = _get_continent(dest_country)
+
+    if o_cont and d_cont and o_cont != d_cont:
+        pair = frozenset({o_cont, d_cont})
+        if pair in NO_RAIL_CONTINENT_PAIRS:
+            return (f"No rail corridor exists between {o_cont} and {d_cont}. "
+                    f"Rail freight is only feasible within or between connected landmasses.")
+
+    return None   # no block
+
+
+def _check_road_corridor(origin_country: str, dest_country: str,
+                         dist: float) -> str | None:
+    """
+    Returns a block reason if road freight is not feasible between these countries,
+    or None if road is fine.
+    """
+    if origin_country == dest_country:
+        return None   # domestic always ok
+
+    # Island nations with no land bridge
+    if origin_country in ISLAND_NATIONS:
+        return (f"{origin_country} is an island — continuous road freight "
+                f"to foreign destinations is not possible.")
+    if dest_country in ISLAND_NATIONS:
+        return (f"{dest_country} is an island — continuous road freight "
+                f"cannot reach it.")
+
+    o_cont = _get_continent(origin_country)
+    d_cont = _get_continent(dest_country)
+
+    if o_cont and d_cont and o_cont != d_cont:
+        pair = frozenset({o_cont, d_cont})
+        if pair in NO_ROAD_CONTINENT_PAIRS:
+            return (f"No continuous road corridor exists between {o_cont} and "
+                    f"{d_cont}. Road freight is only feasible within a connected landmass.")
+
+    return None   # no block
+
+
 # ── Hard eligibility rules ───────────────────────────────────────────────────
 
 def check_eligibility(mode: str, p: dict, r: dict, c: dict) -> list[Flag]:
@@ -99,6 +264,8 @@ def check_eligibility(mode: str, p: dict, r: dict, c: dict) -> list[Flag]:
     urgency_days   = URGENCY_DAYS.get(c.get("urgency", "Standard (10–20 days)"), 20)
     weight         = p.get("weight_kg", 0)
     budget         = c.get("budget_usd", 0)
+    origin_country = r.get("origin", {}).get("country", "")
+    dest_country   = r.get("destination", {}).get("country", "")
 
     ref = MODE_REFERENCE.get(mode, {})
     transit_max = ref.get("days", (99, 99))[1]
@@ -131,6 +298,17 @@ def check_eligibility(mode: str, p: dict, r: dict, c: dict) -> list[Flag]:
     if mode == "Rail freight" and dist < 300:
         flags.append(Flag("block", mode, f"Rail not economical under 300 km (distance: {dist} km)."))
 
+    # ── Rail corridor check ──────────────────────────────────────────────────
+    if mode == "Rail freight":
+        rail_block = _check_rail_corridor(origin_country, dest_country)
+        if rail_block:
+            flags.append(Flag("block", mode, rail_block))
+
+    # ── Road corridor check ──────────────────────────────────────────────────
+    if mode == "Road freight":
+        road_block = _check_road_corridor(origin_country, dest_country, dist)
+        if road_block:
+            flags.append(Flag("block", mode, road_block))
     # ── Hazmat rules ─────────────────────────────────────────────────────────
     if "hazmat" in product_flags:
         if mode == "Air freight":
