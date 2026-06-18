@@ -425,14 +425,31 @@ if submitted and not errors:
     else:
         best = eligible[0]
 
+        # ── Fetch live risk early so it can feed into arrival prediction ─────
+        from map_view import lookup_coords, great_circle_points as _gc_pts
+        _o = payload["route"]["origin"]
+        _d = payload["route"]["destination"]
+        _oc = lookup_coords(_o.get("city",""), _o.get("country",""))
+        _dc = lookup_coords(_d.get("city",""), _d.get("country",""))
+        route_risk_points = []
+        if _oc and _dc:
+            _arc = json.dumps(_gc_pts(_oc[0], _oc[1], _dc[0], _dc[1], n=100))
+            with st.spinner("Fetching live route risk…"):
+                route_risk_points = fetch_route_risk(
+                    _arc, best.mode,
+                    origin_city = _o.get("city", ""),
+                    dest_city   = _d.get("city", ""),
+                )
+
         pred = predict_arrival(
-            departure_dt     = departure_dt,
-            mode             = best.mode,
-            origin_country   = payload["route"]["origin"]["country"],
-            dest_country     = payload["route"]["destination"]["country"],
-            border_crossings = payload["route"]["border_crossings"],
-            transit_days_min = best.estimated_days[0],
-            transit_days_max = best.estimated_days[1],
+            departure_dt         = departure_dt,
+            mode                 = best.mode,
+            origin_country       = payload["route"]["origin"]["country"],
+            dest_country         = payload["route"]["destination"]["country"],
+            border_crossings     = payload["route"]["border_crossings"],
+            transit_days_min     = best.estimated_days[0],
+            transit_days_max     = best.estimated_days[1],
+            weather_risk_points  = route_risk_points,
         )
 
         MODE_COL = {
@@ -499,17 +516,8 @@ if submitted and not errors:
                 )
 
             if oc and dc:
-                arc_pts = great_circle_points(oc[0], oc[1], dc[0], dc[1], n=100)
-                arc_json = json.dumps(arc_pts)
-
-                with st.spinner("Fetching live risk data…"):
-                    risk_points = fetch_route_risk(
-                        arc_json, best.mode,
-                        origin_city        = o.get("city", ""),
-                        dest_city          = d.get("city", ""),
-                        origin_coords_json = json.dumps(list(oc)),
-                        dest_coords_json   = json.dumps(list(dc)),
-                    )
+                # Reuse already-fetched risk data (no second API call)
+                risk_points = route_risk_points
 
                 if not risk_points:
                     st.info("No major chokepoints detected along this route, "
@@ -788,6 +796,16 @@ if submitted and not errors:
                                   for d, n in pred.dest_holidays_hit[:3])
                 st.warning(f"📅 Holidays at **destination** during arrival window: {names}")
 
+            if pred.weather_delay_days > 0:
+                w_col = "#dc2626" if pred.weather_delay_days >= 3 else "#d97706"
+                st.markdown(f"""
+                <div style="background:{w_col}18;border:1px solid {w_col}55;
+                            border-radius:8px;padding:10px 14px;
+                            font-size:13px;color:{w_col};font-weight:500;">
+                    🌩 {pred.weather_delay_label}
+                </div>
+                """, unsafe_allow_html=True)
+
             st.markdown("#### Journey timeline")
             for i, step in enumerate(pred.timeline):
                 is_last = (i == len(pred.timeline) - 1)
@@ -812,13 +830,17 @@ if submitted and not errors:
             st.markdown("#### Time breakdown")
             bc1, bc2 = st.columns(2)
             with bc1:
+                weather_row = (
+                    f"| 🌩 Weather buffer | {pred.weather_delay_days} |\n                "
+                    if pred.weather_delay_days > 0 else ""
+                )
                 st.markdown(f"""
                 | Component | Days |
                 |---|---|
                 | Transit (min–max) | {pred.transit_days_min}–{pred.transit_days_max} |
                 | Border delays (×{payload['route']['border_crossings']}) | {pred.border_delay_days:.1f} |
                 | Customs clearance | {pred.customs_days_min}–{pred.customs_days_max} |
-                | **Total window** | **{(pred.arrival_optimistic-pred.effective_departure).days}–{(pred.arrival_conservative-pred.effective_departure).days}** |
+                {weather_row}| **Total window** | **{(pred.arrival_optimistic-pred.effective_departure).days}–{(pred.arrival_conservative-pred.effective_departure).days}** |
                 """)
             with bc2:
                 st.markdown(f"""
