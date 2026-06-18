@@ -163,8 +163,8 @@ MODE_RULES: dict[str, ModeRules] = {
 class ArrivalPrediction:
     # Effective departure (after cut-off check)
     effective_departure: date
-    cutoff_deadline: datetime       # when cargo must be at terminal
-    missed_cutoff: bool             # did user's departure time miss the cut-off?
+    cutoff_deadline: datetime
+    missed_cutoff: bool
 
     # Transit components
     transit_days_min: int
@@ -173,21 +173,25 @@ class ArrivalPrediction:
     customs_days_min: int
     customs_days_max: int
 
+    # Weather delay
+    weather_delay_days: int           # extra days added due to live weather risk
+    weather_delay_label: str          # human-readable reason, empty if no delay
+
     # Holiday hits
     origin_holidays_hit: list[tuple[date, str]]
     dest_holidays_hit: list[tuple[date, str]]
 
     # Final arrival window
-    arrival_optimistic: date        # best case (min transit, fast customs)
-    arrival_realistic: date         # mid estimate
-    arrival_conservative: date      # worst case (max transit, slow customs, holiday delays)
+    arrival_optimistic: date
+    arrival_realistic: date
+    arrival_conservative: date
 
-    # Confidence label
-    confidence: str                 # "High" / "Medium" / "Low"
+    # Confidence
+    confidence: str
     confidence_reason: str
 
-    # Human-readable timeline
-    timeline: list[dict]            # [{label, date, note}]
+    # Timeline
+    timeline: list[dict]
 
 
 def predict_arrival(
@@ -198,6 +202,7 @@ def predict_arrival(
     border_crossings: int,
     transit_days_min: int,
     transit_days_max: int,
+    weather_risk_points: list[dict] | None = None,  # from risk_feed.fetch_route_risk
 ) -> ArrivalPrediction:
 
     rules     = MODE_RULES.get(mode, MODE_RULES["Road freight"])
@@ -243,36 +248,78 @@ def predict_arrival(
     # ── Border delay (in calendar days) ──────────────────────────────────────
     total_border_delay = rules.border_delay_days * border_crossings
 
+    # ── Weather delay buffer (from live risk feed) ────────────────────────────
+    # Scans all chokepoints on the route and applies a buffer to the
+    # conservative estimate based on the worst weather risk found.
+    weather_delay_days  = 0
+    weather_delay_label = ""
+    worst_weather_rp    = None   # the chokepoint driving the worst risk
+
+    RISK_RANK = {"high": 2, "medium": 1, "low": 0, "unknown": -1}
+
+    if weather_risk_points:
+        # Find the chokepoint with the worst weather risk
+        worst_rank = -1
+        for rp in weather_risk_points:
+            if rp.get("_port_only"):
+                continue
+            w_risk = rp.get("weather_risk", "unknown")
+            rank   = RISK_RANK.get(w_risk, -1)
+            if rank > worst_rank:
+                worst_rank      = rank
+                worst_weather_rp = rp
+
+        if worst_rank == 2:    # high
+            weather_delay_days  = 3
+            weather_delay_label = (
+                f"🔴 High weather risk at {worst_weather_rp['name']} "
+                f"({worst_weather_rp.get('weather_reason','adverse conditions')}) "
+                f"— +{weather_delay_days} days added to worst-case estimate."
+            )
+        elif worst_rank == 1:  # medium
+            weather_delay_days  = 1
+            weather_delay_label = (
+                f"🟡 Elevated weather at {worst_weather_rp['name']} "
+                f"({worst_weather_rp.get('weather_reason','conditions to monitor')}) "
+                f"— +{weather_delay_days} day added to worst-case estimate."
+            )
+
     # ── Build arrival dates ───────────────────────────────────────────────────
 
-    def _compute_arrival(transit: int, customs: int) -> date:
-        # 1. Add transit days (calendar days — sea/air don't stop for weekends)
+    def _compute_arrival(transit: int, customs: int,
+                         extra_days: int = 0) -> date:
+        # 1. Add transit days
         if mode in ("Air freight", "Sea freight (FCL)", "Sea freight (LCL)"):
             arr = effective_dep + timedelta(days=transit)
         else:
-            # Road/rail: transit is working days
             arr = _add_working_days(effective_dep, transit, origin_hols)
 
-        # 2. Add border delays (calendar days)
+        # 2. Add border delays
         arr += timedelta(days=int(total_border_delay))
         if total_border_delay % 1 >= 0.5:
             arr += timedelta(days=1)
 
-        # 3. Arrival at destination port/terminal → next working day if holiday
+        # 3. Add weather buffer (only on conservative — extra_days > 0)
+        arr += timedelta(days=extra_days)
+
+        # 4. Next working day at destination
         arr = _next_working_day(arr, dest_hols)
 
-        # 4. Add customs clearance (working days at destination)
+        # 5. Customs clearance
         arr = _add_working_days(arr, customs, dest_hols)
 
         return arr
 
     arrival_optimistic   = _compute_arrival(transit_days_min, rules.customs_days_min)
-    arrival_conservative = _compute_arrival(transit_days_max, rules.customs_days_max)
+    arrival_conservative = _compute_arrival(transit_days_max, rules.customs_days_max,
+                                            extra_days=weather_delay_days)
 
-    # Realistic: weighted midpoint leaning slightly conservative
+    # Realistic: weighted midpoint — add half the weather buffer
     mid_transit  = (transit_days_min + transit_days_max * 2) // 3
     mid_customs  = (rules.customs_days_min + rules.customs_days_max + 1) // 2
-    arrival_realistic = _compute_arrival(mid_transit, mid_customs)
+    mid_weather  = weather_delay_days // 2
+    arrival_realistic = _compute_arrival(mid_transit, mid_customs,
+                                         extra_days=mid_weather)
 
     # ── Detect holiday hits in transit window ─────────────────────────────────
     origin_holidays_hit = []
@@ -293,11 +340,13 @@ def predict_arrival(
     # ── Confidence assessment ─────────────────────────────────────────────────
     spread_days = (arrival_conservative - arrival_optimistic).days
     issues = []
-    if missed_cutoff:        issues.append("departure pushed due to weekend/holiday")
-    if origin_holidays_hit:  issues.append(f"{len(origin_holidays_hit)} holiday(s) at origin")
-    if dest_holidays_hit:    issues.append(f"{len(dest_holidays_hit)} holiday(s) at destination")
-    if border_crossings > 2: issues.append(f"{border_crossings} border crossings")
-    if spread_days > 14:     issues.append("wide transit range")
+    if missed_cutoff:           issues.append("departure pushed due to weekend/holiday")
+    if origin_holidays_hit:     issues.append(f"{len(origin_holidays_hit)} holiday(s) at origin")
+    if dest_holidays_hit:       issues.append(f"{len(dest_holidays_hit)} holiday(s) at destination")
+    if border_crossings > 2:    issues.append(f"{border_crossings} border crossings")
+    if spread_days > 14:        issues.append("wide transit range")
+    if weather_delay_days >= 3: issues.append("high weather risk on route")
+    elif weather_delay_days >= 1: issues.append("elevated weather risk on route")
 
     if len(issues) == 0:
         confidence = "High"
@@ -331,6 +380,14 @@ def predict_arrival(
             "note":  f"~{total_border_delay:.1f} days added for customs inspection",
         })
 
+    if weather_delay_days > 0:
+        weather_date = effective_dep + timedelta(days=max(2, transit_days_min // 2 + 1))
+        timeline.append({
+            "label": "🌩 Weather delay buffer",
+            "date":  weather_date,
+            "note":  weather_delay_label,
+        })
+
     timeline.append({
         "label": "🏁 Arrives at destination port/airport",
         "date":  arrival_optimistic,
@@ -359,6 +416,8 @@ def predict_arrival(
         border_delay_days      = total_border_delay,
         customs_days_min       = rules.customs_days_min,
         customs_days_max       = rules.customs_days_max,
+        weather_delay_days     = weather_delay_days,
+        weather_delay_label    = weather_delay_label,
         origin_holidays_hit    = origin_holidays_hit,
         dest_holidays_hit      = dest_holidays_hit,
         arrival_optimistic     = arrival_optimistic,
