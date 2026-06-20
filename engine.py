@@ -203,12 +203,29 @@ def check_eligibility(mode: str, p: dict, r: dict, c: dict) -> list[Flag]:
             flags.append(Flag("warn", mode,
                 "Oversized cargo: confirm dimensional and weight limits with carrier."))
 
-    # ── Bulk liquids ─────────────────────────────────────────────────────────
-    if "bulk" in product_flags or p.get("category") == "Liquid bulk (chemicals/fuel)":
+    # ── Bulk liquids (true liquid bulk only — tankers/ISO tanks required) ────
+    if p.get("category") == "Liquid bulk (chemicals/fuel)":
         if mode == "Air freight":
-            flags.append(Flag("block", mode, "Bulk liquid cargo is not compatible with air freight."))
+            flags.append(Flag("block", mode, "Liquid bulk cargo is not compatible with air freight."))
         if mode in ("Road freight", "Rail freight"):
-            flags.append(Flag("warn", mode, "Bulk liquid requires tanker trucks or tank wagons — confirm availability."))
+            flags.append(Flag("warn", mode, "Liquid bulk requires tanker trucks or tank wagons — confirm availability."))
+
+    # ── Bulk / unpacked solids (grain, produce, ore, etc.) ───────────────────
+    # This does NOT block air freight — unpacked solids can still be airfreighted
+    # (e.g. loose produce in reefer ULDs), it just needs different handling.
+    elif "bulk" in product_flags:
+        if mode == "Air freight":
+            flags.append(Flag("warn", mode,
+                "Unpacked/bulk cargo on air freight requires bulk-rated ULDs or "
+                "specialised loose-load handling — confirm with carrier."))
+        if mode in ("Road freight", "Rail freight"):
+            flags.append(Flag("warn", mode,
+                "Bulk/unpacked cargo requires open-top, hopper, or bulk-rated "
+                "containers — confirm availability."))
+        if mode in ("Sea freight (FCL)", "Sea freight (LCL)"):
+            flags.append(Flag("warn", mode,
+                "Bulk/unpacked cargo requires loose-load or bulk container "
+                "stowage — confirm with carrier."))
 
     # ── Urgency vs transit ───────────────────────────────────────────────────
     if transit_max > urgency_days:
