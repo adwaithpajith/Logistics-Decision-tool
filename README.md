@@ -1,4 +1,4 @@
-# 🚚 Transport Advisor — Logistics Decision Tool
+#  Transport Advisor — Logistics Decision Tool
 
 A Streamlit app that recommends the best freight transport mode for a shipment — weighing cost, transit time, CO₂ footprint, and route risk — and explains *why*.
 
@@ -22,12 +22,12 @@ You describe a shipment — product, weight/volume, special handling needs, orig
 
 | Tab | What it shows |
 |---|---|
-| 🛰️ Live risk | Weather and seismic risk near route chokepoints, port congestion signals |
-| 🕐 Arrival prediction | Estimated arrival window with confidence bands (optimistic / realistic / conservative) |
-| 🗺️ Route map | Origin/destination markers, route arcs, chokepoints |
-| 🌿 CO₂ comparison | Per-mode emissions chart with real-world equivalents |
-| 📦 Handling instructions | Packaging, labelling, storage, and compliance guidance |
-| 💡 Why this mode? | Plain-English breakdown of the scoring and eligibility logic |
+|  Live risk | Weather and seismic risk near route chokepoints, port congestion signals |
+|  Arrival prediction | Estimated arrival window with confidence bands (optimistic / realistic / conservative) |
+|  Route map | Origin/destination markers, route arcs, chokepoints |
+|  CO₂ comparison | Per-mode emissions chart with real-world equivalents |
+|  Handling instructions | Packaging, labelling, storage, and compliance guidance |
+|  Why this mode? | Plain-English breakdown of the scoring and eligibility logic |
 
 ## Project structure
 
@@ -91,6 +91,4 @@ The shipment form on `app.py` collects:
 - **Route profile** — origin/destination, distance, available infrastructure, border crossings
 - **Constraints** — urgency, budget, carbon priority, schedule reliability priority, preferred/excluded modes
 
-## License
 
-MIT — feel free to fork and adapt.
